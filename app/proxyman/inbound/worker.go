@@ -62,7 +62,9 @@ func (w *tcpWorker) callback(conn internet.Connection) {
 		newError("connection ends").Base(err).WriteToLog()
 	}
 	cancel()
-	conn.Close()
+	if err := conn.Close(); err != nil {
+		newError("failed to close connection").Base(err).WriteToLog()
+	}
 }
 
 func (w *tcpWorker) Proxy() proxy.Inbound {
@@ -128,7 +130,7 @@ func (c *udpConn) Write(buf []byte) (int, error) {
 }
 
 func (c *udpConn) Close() error {
-	common.Close(c.done)
+	common.Must(c.done.Close())
 	return nil
 }
 
@@ -244,10 +246,7 @@ func (w *udpWorker) removeConn(id connID) {
 func (w *udpWorker) Start() error {
 	w.activeConn = make(map[connID]*udpConn, 16)
 	w.done = signal.NewDone()
-	h, err := udp.ListenUDP(w.address, w.port, udp.ListenOption{
-		Callback:            w.callback,
-		ReceiveOriginalDest: w.recvOrigDest,
-	})
+	h, err := udp.ListenUDP(w.address, w.port, w.callback, udp.HubReceiveOriginalDestination(w.recvOrigDest), udp.HubCapacity(256))
 	if err != nil {
 		return err
 	}
@@ -257,11 +256,18 @@ func (w *udpWorker) Start() error {
 }
 
 func (w *udpWorker) Close() error {
+	w.Lock()
+	defer w.Unlock()
+
 	if w.hub != nil {
 		w.hub.Close()
-		w.done.Close()
-		common.Close(w.proxy)
 	}
+
+	if w.done != nil {
+		common.Must(w.done.Close())
+	}
+
+	common.Close(w.proxy)
 	return nil
 }
 
